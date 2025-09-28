@@ -1,7 +1,6 @@
 import os
 from dotenv import load_dotenv
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi
 from langchain_openai import ChatOpenAI, OpenAI
 from langchain.schema import HumanMessage, SystemMessage
 
@@ -9,30 +8,26 @@ from langchain.schema import HumanMessage, SystemMessage
 MODEL_NAME = "gpt-3.5-turbo"
 TOTAL_QUESTIONS = 6
 MASTERY_THRESHOLD = 3
-# ✅ Hard-coded video
-YOUTUBE_URL = "https://www.youtube.com/watch?v=EaZu1hdeS80"
-VIDEO_ID = "EaZu1hdeS80"
+# Path to your saved transcript file
+TRANSCRIPT_PATH = os.path.join("financial_texts", "Budgeting.txt")
+# Optional YouTube video to embed
+VIDEO_ID = "EaZu1hdeS80"   # keep if you still want to show the video
 
 # -------------- HELPERS -----------------
-def extract_transcript(video_id: str) -> str:
-    """Fetch full transcript text."""
+def load_local_text(path: str) -> str:
+    """Read the saved transcript text file once."""
     try:
-        yta = YouTubeTranscriptApi()
-        transcripts = yta.list(video_id)
-        try:
-            segments = transcripts.find_transcript(["en"]).fetch()
-        except Exception:
-            segments = next(iter(transcripts)).fetch()
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
     except Exception as e:
-        st.error(f"Could not retrieve the financial lesson: {e}")
+        st.error(f"Could not load lesson text: {e}")
         return ""
-    return " ".join(seg.text for seg in segments)
 
 def summarize_lesson(raw_text: str, api_key: str) -> str:
     """Summarize a long lesson into a short quiz-ready version."""
     llm = OpenAI(api_key=api_key, temperature=0, model="gpt-3.5-turbo-instruct")
     max_chars = 3000
-    chunks = [raw_text[i:i+max_chars] for i in range(0, len(raw_text), max_chars)]
+    chunks = [raw_text[i:i + max_chars] for i in range(0, len(raw_text), max_chars)]
     bullet_points = []
     for ch in chunks:
         prompt = f"Summarize this financial lesson chunk in 4–5 bullet points:\n\n{ch}"
@@ -149,17 +144,17 @@ def main():
     load_dotenv()
     st.set_page_config(page_title="Finance Lesson Quiz-Bot", page_icon="🎥")
     st.title("🎥 Lesson 1: Budgeting")
-    st.caption("Watch the lesson below, then answer questions to test your understanding.")
+    st.caption("Read the saved transcript below, then answer questions to test your understanding.")
 
     init_state()
 
-    # ✅ Embed YouTube video player
+    # Optional video embed
     st.video(f"https://www.youtube.com/embed/{VIDEO_ID}")
 
     # Prepare lesson summary once
     if "lesson" not in st.session_state:
         with st.spinner("Preparing for financial quiz session..."):
-            raw = extract_transcript(VIDEO_ID)
+            raw = load_local_text(TRANSCRIPT_PATH)
             if raw:
                 api_key = os.getenv("OPENAI_API_KEY")
                 short_summary = summarize_lesson(raw, api_key)

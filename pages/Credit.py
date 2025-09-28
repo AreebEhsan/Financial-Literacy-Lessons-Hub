@@ -1,7 +1,6 @@
 import os
 from dotenv import load_dotenv
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi
 from langchain_openai import ChatOpenAI, OpenAI
 from langchain.schema import HumanMessage, SystemMessage
 
@@ -9,7 +8,9 @@ from langchain.schema import HumanMessage, SystemMessage
 MODEL_NAME = "gpt-3.5-turbo"
 TOTAL_QUESTIONS = 6
 MASTERY_THRESHOLD = 3
-YOUTUBE_URL = "https://www.youtube.com/watch?v=2WLZY7aJ7Ak"
+# Path to your saved transcript file
+TRANSCRIPT_PATH = os.path.join("financial_texts", "Credit.txt")
+# Optional YouTube video to embed
 VIDEO_ID = "2WLZY7aJ7Ak"
 
 # --- UNIQUE KEYS for this page ---
@@ -20,26 +21,25 @@ FINISHED_KEY    = "credit_finished"
 SCORE_KEY       = "credit_score"
 
 # -------------- HELPERS -----------------
-def extract_transcript(video_id: str) -> str:
+def load_local_text(path: str) -> str:
+    """Read the saved transcript text file once."""
     try:
-        yta = YouTubeTranscriptApi()
-        transcripts = yta.list(video_id)
-        try:
-            segments = transcripts.find_transcript(["en"]).fetch()
-        except Exception:
-            segments = next(iter(transcripts)).fetch()
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
     except Exception as e:
-        st.error(f"Could not retrieve the financial lesson: {e}")
+        st.error(f"Could not load lesson text: {e}")
         return ""
-    return " ".join(seg.text for seg in segments)
 
 def summarize_lesson(raw_text: str, api_key: str) -> str:
+    """Summarize a long lesson into a short quiz-ready version."""
     llm = OpenAI(api_key=api_key, temperature=0, model="gpt-3.5-turbo-instruct")
     max_chars = 3000
-    chunks = [raw_text[i:i+max_chars] for i in range(0, len(raw_text), max_chars)]
+    chunks = [raw_text[i:i + max_chars] for i in range(0, len(raw_text), max_chars)]
     bullets = []
     for ch in chunks:
-        bullets.append(llm.invoke(f"Summarize this financial lesson chunk in 4–5 bullet points:\n\n{ch}"))
+        bullets.append(llm.invoke(
+            f"Summarize this financial lesson chunk in 4–5 bullet points:\n\n{ch}"
+        ))
     combined = "\n".join(str(b) for b in bullets)
     final_prompt = (
         "Combine these bullet points into a single concise financial lesson "
@@ -140,7 +140,9 @@ def run_quiz():
                 st.chat_message("assistant").write(mastery_msg)
 
             if st.session_state[QUESTION_KEY] <= TOTAL_QUESTIONS:
-                next_q = ask_question(llm, st.session_state[LESSON_KEY], st.session_state[QUESTION_KEY])
+                next_q = ask_question(llm,
+                                      st.session_state[LESSON_KEY],
+                                      st.session_state[QUESTION_KEY])
                 st.session_state[CONVO_KEY].append({"role": "assistant", "content": next_q})
                 st.chat_message("assistant").write(next_q)
             else:
@@ -151,15 +153,16 @@ def main():
     load_dotenv()
     st.set_page_config(page_title="Finance Lesson Quiz-Bot", page_icon="🎥")
     st.title("🎥 Lesson 2: Understanding Credit")
-    st.caption("Watch the lesson below, then answer questions to test your understanding.")
+    st.caption("Read the saved transcript below, then answer questions to test your understanding.")
 
     init_state()
 
+    # Optional: embed the original video if you still want to show it
     st.video(f"https://www.youtube.com/embed/{VIDEO_ID}")
 
     if LESSON_KEY not in st.session_state:
         with st.spinner("Preparing for financial quiz session..."):
-            raw = extract_transcript(VIDEO_ID)
+            raw = load_local_text(TRANSCRIPT_PATH)
             if raw:
                 api_key = os.getenv("OPENAI_API_KEY")
                 summary = summarize_lesson(raw, api_key)
