@@ -1,0 +1,183 @@
+import os
+from dotenv import load_dotenv
+import streamlit as st
+from youtube_transcript_api import YouTubeTranscriptApi
+from langchain_openai import ChatOpenAI, OpenAI
+from langchain.schema import HumanMessage, SystemMessage
+
+# ---------------- CONFIG ----------------
+MODEL_NAME = "gpt-3.5-turbo"
+TOTAL_QUESTIONS = 6
+MASTERY_THRESHOLD = 3
+# ✅ Hard-coded video
+YOUTUBE_URL = "https://www.youtube.com/watch?v=EaZu1hdeS80"
+VIDEO_ID = "EaZu1hdeS80"
+
+# -------------- HELPERS -----------------
+def extract_transcript(video_id: str) -> str:
+    """Fetch full transcript text."""
+    try:
+        yta = YouTubeTranscriptApi()
+        transcripts = yta.list(video_id)
+        try:
+            segments = transcripts.find_transcript(["en"]).fetch()
+        except Exception:
+            segments = next(iter(transcripts)).fetch()
+    except Exception as e:
+        st.error(f"Could not retrieve the financial lesson: {e}")
+        return ""
+    return " ".join(seg.text for seg in segments)
+
+def summarize_lesson(raw_text: str, api_key: str) -> str:
+    """Summarize a long lesson into a short quiz-ready version."""
+    llm = OpenAI(api_key=api_key, temperature=0, model="gpt-3.5-turbo-instruct")
+    max_chars = 3000
+    chunks = [raw_text[i:i+max_chars] for i in range(0, len(raw_text), max_chars)]
+    bullet_points = []
+    for ch in chunks:
+        prompt = f"Summarize this financial lesson chunk in 4–5 bullet points:\n\n{ch}"
+        bullet_points.append(llm.invoke(prompt))
+    combined = "\n".join(str(bp) for bp in bullet_points)
+    final_prompt = (
+        "Combine these bullet points into a single concise financial lesson "
+        "summary (≈300 words):\n\n" + combined
+    )
+    return llm.invoke(final_prompt)
+
+def init_state():
+    defaults = dict(
+        question_num=0,
+        conversation=[],
+        finished=False,
+        score=0
+    )
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+def ask_question(llm: ChatOpenAI, lesson: str, num: int) -> str:
+    asked = [t["content"] for t in st.session_state.conversation if t["role"] == "assistant"]
+    msgs = [
+        SystemMessage(content="You are a friendly finance tutor."),
+        HumanMessage(content=(
+            f"Here is the financial lesson:\n{lesson}\n\n"
+            f"Previous questions: {asked}\n"
+            f"Ask question #{num} of {TOTAL_QUESTIONS} to check understanding. "
+            "Do NOT repeat previous questions and do NOT give the answer."
+        ))
+    ]
+    return llm.invoke(msgs).content
+
+def grade_answer(llm: ChatOpenAI, question: str, user_answer: str, lesson: str) -> str:
+    trigger_words = ["answer", "give", "tell", "idk", "don't know"]
+    if any(w in user_answer.lower() for w in trigger_words):
+        msgs = [
+            SystemMessage(content="You are a helpful finance tutor."),
+            HumanMessage(content=(
+                f"Financial lesson:\n{lesson}\n\n"
+                f"Provide the correct answer to this question and a short explanation:\n{question}"
+            ))
+        ]
+        return llm.invoke(msgs).content
+
+    msgs = [
+        SystemMessage(content="You are a strict but helpful finance tutor."),
+        HumanMessage(content=(
+            f"Financial lesson:\n{lesson}\n\n"
+            f"Question: {question}\n"
+            f"Student Answer: {user_answer}\n\n"
+            "Say Correct or Incorrect and give a very short explanation or hint."
+        ))
+    ]
+    return llm.invoke(msgs).content
+
+def run_quiz():
+    api_key = os.getenv("OPENAI_API_KEY")
+    llm = ChatOpenAI(api_key=api_key, temperature=0.6, model=MODEL_NAME)
+
+    for turn in st.session_state.conversation:
+        st.chat_message(turn["role"]).write(turn["content"])
+
+    if st.session_state.question_num <= TOTAL_QUESTIONS:
+        prompt = (
+            "Type your answer and press Enter"
+            if st.session_state.conversation
+            else "Press Enter to receive the first question"
+        )
+        user_msg = st.chat_input(prompt)
+
+        # First question
+        if not st.session_state.conversation and user_msg is None:
+            q = ask_question(llm, st.session_state.lesson, 1)
+            st.session_state.conversation.append({"role": "assistant", "content": q})
+            st.chat_message("assistant").write(q)
+            return
+
+        if user_msg:
+            last_q = st.session_state.conversation[-1]["content"]
+            st.session_state.conversation.append({"role": "user", "content": user_msg})
+            st.chat_message("user").write(user_msg)
+
+            feedback = grade_answer(llm, last_q, user_msg, st.session_state.lesson)
+            st.session_state.conversation.append({"role": "assistant", "content": feedback})
+            st.chat_message("assistant").write(feedback)
+
+            if "correct" in feedback.lower():
+                st.session_state.score += 1
+
+            st.session_state.question_num += 1
+
+            if (st.session_state.question_num >= MASTERY_THRESHOLD
+                and st.session_state.score >= MASTERY_THRESHOLD
+                and not st.session_state.finished):
+                mastery_msg = (
+                    "🎯 Fantastic! You’ve demonstrated mastery of this financial lesson. "
+                    "You can continue for more practice or stop here."
+                )
+                st.session_state.conversation.append({"role": "assistant", "content": mastery_msg})
+                st.chat_message("assistant").write(mastery_msg)
+
+            if st.session_state.question_num <= TOTAL_QUESTIONS:
+                next_q = ask_question(llm, st.session_state.lesson, st.session_state.question_num)
+                st.session_state.conversation.append({"role": "assistant", "content": next_q})
+                st.chat_message("assistant").write(next_q)
+            else:
+                st.session_state.finished = True
+
+# ---------------- MAIN APP --------------------
+def main():
+    load_dotenv()
+    st.set_page_config(page_title="Finance Lesson Quiz-Bot", page_icon="🎥")
+    st.title("🎥 Lesson 1: Budgeting")
+    st.caption("Watch the lesson below, then answer questions to test your understanding.")
+
+    init_state()
+
+    # ✅ Embed YouTube video player
+    st.video(f"https://www.youtube.com/embed/{VIDEO_ID}")
+
+    # Prepare lesson summary once
+    if "lesson" not in st.session_state:
+        with st.spinner("Preparing for financial quiz session..."):
+            raw = extract_transcript(VIDEO_ID)
+            if raw:
+                api_key = os.getenv("OPENAI_API_KEY")
+                short_summary = summarize_lesson(raw, api_key)
+                st.session_state.lesson = short_summary
+                st.success("Quiz Available! Click *Start Quiz* to begin.")
+
+    if "lesson" in st.session_state and not st.session_state.finished:
+        if st.button("Start Quiz", disabled=st.session_state.question_num > 0):
+            st.session_state.question_num = 1
+            st.session_state.conversation = []
+            st.session_state.finished = False
+            st.session_state.score = 0
+
+        if st.session_state.question_num > 0:
+            run_quiz()
+
+    if st.session_state.finished:
+        st.success("🎉 Quiz complete! Thanks for playing.")
+
+if __name__ == "__main__":
+    main()
